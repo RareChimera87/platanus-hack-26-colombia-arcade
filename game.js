@@ -1034,7 +1034,23 @@ function buildBackground() {
   }
   const stars = [];
   for (let i = 0; i < 60; i++) stars.push({ x: rng() * 1000, y: rng() * 130, r: rng() * 1.3 + 0.3 });
-  BG = { cerros, blocks, stars };
+
+  const lamps = [];
+  for (let x = 150; x < WORLD_W; x += 355) lamps.push({ x, side: x % 710 < 355 ? 1 : -1 });
+
+  // Onlookers on the far pavement. Small, so they read as distance.
+  const crowd = [];
+  const palette = [0xd94f3d, 0x3d7fd9, 0x4cc27a, 0xe0b33d, 0xd96bb0, 0x8f6bd6];
+  for (let i = 0; i < 16; i++) {
+    crowd.push({
+      x: 90 + rng() * (WORLD_W - 180),
+      shirt: palette[Math.floor(rng() * palette.length)],
+      phase: rng() * 6.28,
+      rate: 3.2 + rng() * 2.4,
+      tall: 22 + rng() * 6,
+    });
+  }
+  BG = { cerros, blocks, stars, lamps, crowd };
 }
 
 // --- World rendering ------------------------------------------------------
@@ -1127,6 +1143,45 @@ function drawCorner(k, x0, x1, time, side) {
   const pulse = 0.28 + 0.22 * Math.sin(time * 0.005);
   k.fillStyle(COL.cash, pulse);
   k.fillRect(side > 0 ? x1 - 4 : x0 + 1, ROAD_TOP - 6, 4, ROAD_BOTTOM - ROAD_TOP + 14);
+}
+
+// Lamp posts and the crowd, drawn behind the traffic so the depth reads.
+function drawStreet(k, time) {
+  for (const l of BG.lamps) {
+    k.fillStyle(0x241f33, 1);
+    k.fillRect(l.x - 3, 186, 7, 122);
+    k.fillRect(l.x + (l.side > 0 ? 4 : -34), 188, 30, 5);
+    const hx = l.x + l.side * 32;
+    k.fillStyle(0x3a3450, 1);
+    k.fillTriangle(hx - 11, 192, hx + 11, 192, hx, 204);
+    k.fillStyle(0xffe9a8, 0.85);
+    k.fillCircle(hx, 200, 5);
+    k.fillStyle(0xffe9a8, 0.10);
+    k.fillCircle(hx, 200, 20);
+    // Pool of light on the asphalt.
+    k.fillStyle(0xffe9a8, 0.05);
+    k.fillEllipse(hx, 372, 190, 62);
+  }
+
+  // The better the show, the harder the crowd bounces.
+  const hype = Math.min(1, S.show / 70);
+  for (const p of BG.crowd) {
+    const bob = Math.sin(time * 0.001 * p.rate + p.phase) * (1.2 + hype * 5);
+    const y = 306 + bob;
+    k.fillStyle(0x1a1730, 1);
+    k.fillRect(p.x - 4, y - p.tall * 0.42, 9, p.tall * 0.42);
+    k.fillStyle(p.shirt, 0.92);
+    k.fillRoundedRect(p.x - 5, y - p.tall, 11, p.tall * 0.62, 3);
+    k.fillStyle(0x8c5a3c, 1);
+    k.fillCircle(p.x, y - p.tall - 4, 5);
+    // Arms go up when the show is genuinely hot.
+    if (hype > 0.72) {
+      const clap = Math.sin(time * 0.012 + p.phase) * 3;
+      k.fillStyle(0x8c5a3c, 1);
+      k.fillRect(p.x - 9, y - p.tall - 6 + clap, 4, 10);
+      k.fillRect(p.x + 5, y - p.tall - 6 - clap, 4, 10);
+    }
+  }
 }
 
 function drawCar(k, c, time) {
@@ -1551,7 +1606,7 @@ function drawOverlay(scene, time) {
     k.fillStyle(0x08070f, 0.55);
     k.fillRect(0, 0, W, H);
     drawTitle(k, time);
-    panel(k, W / 2 - 230, 208, 460, 150);
+    panel(k, W / 2 - 230, 208, 460, 196);
     for (let i = 0; i < MENU_ITEMS.length; i++) {
       const on = i === S.menuIdx;
       const y = 240 + i * 42;
@@ -1561,7 +1616,7 @@ function drawOverlay(scene, time) {
       }
       txt(W / 2, y, (on ? '> ' : '  ') + MENU_ITEMS[i] + (on ? ' <' : '  '), on ? 20 : 17, on ? COL.accent : COL.dim, 0.5, 0.5, 0, 13);
     }
-    txt(W / 2, 388, 'JOYSTICK para elegir  ·  BOTON 1 para entrar', 13, COL.dim, 0.5, 0.5, 0, 13);
+    txt(W / 2, 376, 'JOYSTICK para elegir  ·  BOTON 1 para entrar', 13, COL.dim, 0.5, 0.5, 0, 13);
     txt(W / 2, 570, 'el rojo dura 45 segundos. haga el show, cobre, y salgase.', 14, COL.paper, 0.5, 0.5, 0, 13);
     return;
   }
@@ -1729,6 +1784,7 @@ function render(scene, time, dt) {
   drawRoad(time);
 
   const k = g.world;
+  drawStreet(k, time);
   for (const c of S.cars) drawCar(k, c, time);
   for (const m of S.motos) drawMoto(k, m, time);
 
