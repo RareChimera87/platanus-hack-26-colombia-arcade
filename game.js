@@ -526,6 +526,7 @@ const S = {
   shopIdx: 0,
   shopOffer: [],
   pauseIdx: 0,
+  menuLock: 0,           // brief deaf spell so a stray press cannot restart
   tallyT: 0,
   overT: 0,
 };
@@ -597,6 +598,9 @@ function startDemo() {
   S.mode = 'menu';
   S.menuIdx = 0;
   S.idleT = 0;
+  // Someone who just quit is usually still mashing the button they were
+  // playing with. Stay deaf for a moment so they actually land on the menu.
+  S.menuLock = 0.6;
 }
 
 function resetRun(vs) {
@@ -1188,13 +1192,19 @@ function stepMenu(scene, presses, dt, time) {
   // The demo is a real round, so the menu sits on top of actual gameplay.
   stepPlay(scene, [], dt, time);
 
+  if (S.menuLock > 0) S.menuLock = Math.max(0, S.menuLock - dt);
+
   if (pressedOnce(presses, 'P1_U', 'P2_U')) { S.menuIdx = (S.menuIdx + MENU_ITEMS.length - 1) % MENU_ITEMS.length; SFX.move(); }
   if (pressedOnce(presses, 'P1_D', 'P2_D')) { S.menuIdx = (S.menuIdx + 1) % MENU_ITEMS.length; SFX.move(); }
 
-  // START2 drops straight into versus, the way a cabinet should behave.
-  if (pressedOnce(presses, 'START2', 'P2_1')) { SFX.select(); beginRun(true); return; }
+  if (S.menuLock > 0) return;
 
-  if (pressedOnce(presses, 'P1_1', 'START1')) {
+  // START2 drops straight into versus, the way a cabinet should behave. Only
+  // the dedicated start button does this — P2's action button is a normal
+  // confirm, because in solo play it is one of the player's own buttons.
+  if (pressedOnce(presses, 'START2')) { SFX.select(); beginRun(true); return; }
+
+  if (pressedOnce(presses, 'P1_1', 'P2_1', 'START1')) {
     SFX.select();
     if (S.menuIdx === 0) beginRun(false);
     else if (S.menuIdx === 1) beginRun(true);
@@ -1208,6 +1218,9 @@ function stepMenu(scene, presses, dt, time) {
 
 function stepPanel(scene, presses, back) {
   S.cascadeT += 0.02;
+  // Same anti-mash guard: landing here straight off the name entry should not
+  // blow past the table before the player has seen their own name on it.
+  if (S.menuLock > 0) { S.menuLock = Math.max(0, S.menuLock - 1 / 60); return; }
   if (pressedOnce(presses, 'P1_1', 'P1_2', 'P2_1', 'P2_2', 'START1', 'START2')) {
     SFX.select();
     S.mode = back;
@@ -1221,12 +1234,14 @@ const PAUSE_ITEMS = ['SEGUIR JUGANDO', 'DEJARLO ASI'];
 
 function stepPause(scene, presses, dt) {
   S.cascadeT += dt * 1.6;
-  if (pressedOnce(presses, 'P1_U', 'P2_U', 'P1_D', 'P2_D')) {
+  // Any stick direction moves between the two options.
+  if (pressedOnce(presses, 'P1_U', 'P2_U', 'P1_D', 'P2_D', 'P1_L', 'P2_L', 'P1_R', 'P2_R')) {
     S.pauseIdx = 1 - S.pauseIdx;
     SFX.move();
   }
-  if (pressedOnce(presses, 'START1', 'START2')) { SFX.select(); S.mode = 'play'; S.nextBeat = 0; return; }
-  if (pressedOnce(presses, 'P1_1', 'P2_1')) {
+  // START and BOTON 1 both take whatever is highlighted. START used to resume
+  // unconditionally, which silently threw away the choice the player made.
+  if (pressedOnce(presses, 'P1_1', 'P2_1', 'START1', 'START2')) {
     SFX.select();
     if (S.pauseIdx === 0) { S.mode = 'play'; S.nextBeat = 0; }
     else startDemo();
@@ -2148,7 +2163,7 @@ function drawOverlay(scene, time) {
       }
       txt(W / 2, y, (on ? '> ' : '  ') + PAUSE_ITEMS[i] + (on ? ' <' : '  '), on ? 20 : 17, on ? COL.accent : COL.dim, 0.5, 0.5, 0, 13);
     }
-    txt(W / 2, 388, 'START tambien sigue', 12, COL.dim, 0.5, 0.5, 0, 13);
+    txt(W / 2, 388, 'JOYSTICK elige  ·  BOTON 1 o START confirma', 12, COL.dim, 0.5, 0.5, 0, 13);
     return;
   }
 
