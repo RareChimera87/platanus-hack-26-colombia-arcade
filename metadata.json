@@ -1,5 +1,5 @@
 {
   "game_name": "El Rebusque",
-  "description": "Usted es el malabarista del semáforo. El rojo dura 45 segundos: haga el show, cobre en los vidrios abiertos, y sálgase de la vía antes del verde. Atajar va en el ritmo y cobrar le ocupa la mano, así que toca aprender a cobrar en el contratiempo.",
-  "player_mode": "single_player"
+  "description": "Usted es el malabarista del semáforo. El rojo dura 45 segundos: haga el show, cobre en los vidrios abiertos, y sálgase de la vía antes del verde. Atajar va en el ritmo y cobrar le ocupa la mano, así que toca aprender a cobrar en el contratiempo — o florear, tirarlas alto y ganarse tres tiempos con las manos libres. De a dos, es la misma vía y el que cobre primero se lleva la moneda.",
+  "player_mode": "two_player"
 }
