@@ -10,7 +10,7 @@
 const W = 800;
 const H = 600;
 
-const STORAGE_KEY = 'el-rebusque-highscores-v1';
+const STORAGE_KEY = 'el-rebusque-highscores-v2';
 const MAX_SCORES = 6;
 const NAME_LEN = 3;
 
@@ -159,13 +159,22 @@ function isScoreEntry(v) {
     typeof v.name === 'string' && typeof v.score === 'number' && typeof v.round === 'number';
 }
 
+// Ninguna maquina de arcade arranca con la tabla en blanco: viene con
+// puntajes de fabrica para que haya a quien tumbar desde la primera moneda.
+// La primera vez que alguien entra a la tabla, estos se guardan con el.
+const SEED_SCORES = [
+  ['BOG', 64200, 11], ['RBQ', 48900, 9], ['JUA', 31200, 7],
+  ['CRA', 19400, 6], ['DGO', 11700, 4], ['ELM', 6300, 3],
+].map((e) => ({ name: e[0], score: e[1], round: e[2], combo: 0 }));
+
 async function loadScores() {
   try {
     const res = await getStorage().get(STORAGE_KEY);
-    if (!res || !res.found || !Array.isArray(res.value)) return [];
-    return res.value.filter(isScoreEntry).sort((a, b) => b.score - a.score).slice(0, MAX_SCORES);
+    if (!res || !res.found || !Array.isArray(res.value)) return SEED_SCORES.slice();
+    const list = res.value.filter(isScoreEntry).sort((a, b) => b.score - a.score).slice(0, MAX_SCORES);
+    return list.length ? list : SEED_SCORES.slice();
   } catch (_) {
-    return [];
+    return SEED_SCORES.slice();
   }
 }
 
@@ -466,6 +475,8 @@ function mkPlayer(i, ctl) {
     nBalls: 3,
     cash: 0,
     roundCash: 0,
+    pts: 0,
+    roundPts: 0,
     totalPerfect: 0,
     // Floreo: the balls go up for a few beats and the hands come free.
     trickEnd: -1,        // beat the throw lands on; -1 when not tricking
@@ -668,6 +679,7 @@ function startRound(r) {
     p.wobble = 0;
     p.dropT = 0;
     p.roundCash = 0;
+    p.roundPts = 0;
     // Two jugglers start apart so the first scramble is not a collision.
     p.px = WW / 2 + (n > 1 ? (i === 0 ? -150 : 150) : 0);
     p.pvx = 0;
@@ -762,6 +774,8 @@ function collectRange(p) {
 }
 
 function dropBalls(p) {
+  subPts(p, 200 * comboMul(p));
+  p.combo = 0;
   p.missStreak = 0;
   p.dropT = 1.0;
   p.show = 0;
@@ -776,6 +790,36 @@ function dropBalls(p) {
   }
 }
 
+// --- Puntaje --------------------------------------------------------------
+// La plata y los puntos son dos cosas distintas a proposito. La plata es
+// capital de trabajo: entra por los vidrios y sale en la tienda. Los puntos
+// son el pulso del show y no se gastan, asi que comprar mejoras ya no le baja
+// el puntaje a nadie y la tabla mide quien juega, no quien no invirtio.
+function comboMul(p) {
+  return 1 + Math.min(p.combo, 60) * 0.05;   // hasta x4
+}
+
+function addPts(p, n) {
+  n = Math.round(n);
+  p.pts += n;
+  p.roundPts += n;
+  return n;
+}
+
+// Fallar tiene que doler en la tabla, no solo en el show. El castigo se
+// multiplica con el combo que se venia cargando: entre mas alto iba volando,
+// mas duro es el golpe, y por eso el combo es una apuesta y no solo un adorno.
+function subPts(p, n) {
+  n = Math.round(n);
+  p.pts = Math.max(0, p.pts - n);
+  p.roundPts = Math.max(0, p.roundPts - n);
+  return n;
+}
+
+function num(n) {
+  return Math.round(n).toLocaleString('es-CO');
+}
+
 function registerJudge(p, kind) {
   p.judge = kind;
   p.judgeT = 0.7;
@@ -788,13 +832,16 @@ function registerJudge(p, kind) {
     p.show = Math.min(100, p.show + (kind === 'PERFECTO' ? 3.2 : 1.4) * (hot ? 3.6 : 1));
     p.combo++;
     p.missStreak = 0;
+    addPts(p, (kind === 'PERFECTO' ? 30 : 10) * comboMul(p));
     if (kind === 'PERFECTO') { p.totalPerfect++; SFX.perfect(); } else SFX.good();
     tutHit(hot ? 'trick' : 'catch');
     if (hot) {
       const bonus = Math.round(1100 * S.spec.tipMul * (1 + p.combo * 0.02));
       p.cash += bonus;
       p.roundCash += bonus;
-      addFloat(p.px, HAND_Y - 78, 'iFLOREO!  +' + money(bonus), p.skin.mark);
+      const bp = addPts(p, 900 * comboMul(p));
+      addFloat(p.px, HAND_Y - 78, 'iFLOREO!  +' + num(bp), p.skin.mark);
+      addFloat(p.px, HAND_Y - 54, '+' + money(bonus), COL.cash);
       burst(p.px, HAND_Y - 40, p.skin.mark, 18);
       SFX.bigcoin();
       S.flash = 0.45;
@@ -802,6 +849,8 @@ function registerJudge(p, kind) {
     }
   } else {
     p.show = Math.max(0, p.show - (hot ? 26 : 14));
+    const pen = subPts(p, 40 * comboMul(p) * (hot ? 4 : 1));
+    if (pen) addFloat(p.px, HAND_Y - 58, '-' + num(pen), COL.danger);
     p.combo = 0;
     p.wobble = Math.min(1, p.wobble + 0.45);
     SFX.miss();
@@ -845,6 +894,7 @@ function stepBeat(time, dt) {
 // otherwise the beat is decoration.
 function fumble(p) {
   p.show = Math.max(0, p.show - 4);
+  subPts(p, 15 * comboMul(p));
   p.wobble = Math.min(1.2, p.wobble + 0.3);
   SFX.miss();
   if (p.wobble >= 1) {
@@ -906,7 +956,8 @@ function tryCollect(p) {
   const amount = Math.round(car.tip * (1 + p.combo * 0.015));
   p.roundCash += amount;
   p.cash += amount;
-  addFloat(car.x, CAR_BASE - car.type.h - 26, '+$' + amount.toLocaleString('es-CO'), COL.cash);
+  const gp = addPts(p, (car.type.tip / 10) * comboMul(p));
+  addFloat(car.x, CAR_BASE - car.type.h - 26, '+$' + amount.toLocaleString('es-CO') + '  +' + num(gp), COL.cash);
   burst(car.x, CAR_BASE - car.type.h - 10, COL.cash, 10);
   if (amount >= 4000) { SFX.bigcoin(); S.flash = 0.5; S.flashCol = 0x7de07d; }
   else SFX.coin(p.combo);
@@ -1072,10 +1123,13 @@ function resolveGreen(scene) {
   let hit = false;
   for (const p of S.players) {
     if (inSafeZone(p.px)) {
-      addFloat(p.px, HAND_Y - 60, 'iSALVO!', COL.cash);
+      const b = S.tut ? 0 : addPts(p, 300 * S.round);
+      addFloat(p.px, HAND_Y - 60, b ? 'iSALVO!  +' + num(b) : 'iSALVO!', COL.cash);
       continue;
     }
     hit = true;
+    const cost = S.tut ? 0 : subPts(p, 300 * S.round);
+    if (cost) addFloat(p.px, HAND_Y - 88, '-' + num(cost), COL.danger);
     p.stunT = 2.2;
     p.show = 0;
     p.combo = 0;
@@ -1437,7 +1491,7 @@ function stepOver(scene, presses, dt) {
   S.cascadeT += dt * 1.6;
   if (S.overT > 0.8 && pressedOnce(presses, 'P1_1', 'P1_2', 'P2_1', 'P2_2', 'START1', 'START2')) {
     SFX.select();
-    const score = Math.round(P1P().cash);
+    const score = Math.round(P1P().pts);
     const worthy = S.scores.length < MAX_SCORES || score > (S.scores[S.scores.length - 1] || { score: 0 }).score;
     if (worthy && score > 0) {
       S.mode = 'name';
@@ -1472,7 +1526,7 @@ function stepName(scene, presses, dt) {
     const p = P1P();
     const entry = {
       name,
-      score: Math.round(p.cash),
+      score: Math.round(p.pts),
       round: S.round,
       combo: p.bestCombo,
       savedAt: new Date().toISOString(),
@@ -2170,8 +2224,9 @@ function drawHud(scene, time) {
       const p = P1P();
       k.fillStyle(0x0a0910, 0.72);
       k.fillRoundedRect(14, 12, 260, 60, 10);
-      txt(24, 26, money(p.cash), 26, COL.cash, 0, 0.5, 0, 13);
-      txt(24, 54, S.tut ? 'PRACTICANDO' : 'SEMAFORO ' + S.round, 13, COL.dim, 0, 0.5, 0, 13);
+      txt(24, 28, num(p.pts), 26, COL.paper, 0, 0.5, 0, 13);
+      txt(24, 55, money(p.cash), 14, COL.cash, 0, 0.5, 0, 13);
+      txt(190, 55, S.tut ? 'PRACTICANDO' : 'SEMAFORO ' + S.round, 12, COL.dim, 1, 0.5, 0, 13);
 
       // Lives, drawn as spare hats. Practice has none to lose.
       for (let i = 0; !S.tut && i < 3; i++) {
@@ -2336,6 +2391,8 @@ function drawOverlay(scene, time) {
       ['BOTON 3', 'Floreo: las tira alto y le quedan 3 tiempos con las manos'],
       ['', 'libres. Pero le toca atajarlas todas en un solo tiempo.'],
       ['EL SHOW', 'Atajar bien lo sube. Mientras mas alto, mas vidrios bajan.'],
+      ['LOS PUNTOS', 'Ritmo, floreo y combo dan puntos: eso es lo que va a la tabla.'],
+      ['LA PLATA', 'Es aparte. Se gasta en la tienda y no le baja el puntaje.'],
       ['LA TRAMPA', 'Cobrar le ocupa la mano: ese tiempo lo pierde.'],
       ['', 'Aprenda a cobrar en el contratiempo, o floree para alcanzar.'],
       ['LA PACIENCIA', 'El vidrio abierto se vuelve a subir si usted se demora.'],
@@ -2344,11 +2401,11 @@ function drawOverlay(scene, time) {
       ['DOS', 'START2 arranca el reto: tres semaforos, la misma via, y'],
       ['', 'el que cobre primero se lleva la moneda.'],
     ];
-    let y = 114;
+    let y = 106;
     for (const [a, b] of lines) {
       if (a) txt(92, y, a, 14, COL.accent, 0, 0.5, 0, 13);
       if (b) txt(218, y, b, 13, COL.paper, 0, 0.5, 0, 13);
-      y += 29;
+      y += 27;
     }
     txt(W / 2, H - 46, 'BOTON 1 para volver', 14, COL.dim, 0.5, 0.5, 0, 13);
     return;
@@ -2368,7 +2425,7 @@ function drawOverlay(scene, time) {
         const c = i === 0 ? COL.accent : COL.paper;
         txt(180, y, String(i + 1).padStart(2, '0'), 18, COL.dim, 0, 0.5, 0, 13);
         txt(228, y, s.name, 20, c, 0, 0.5, 0, 13);
-        txt(W - 180, y, money(s.score), 20, COL.cash, 1, 0.5, 0, 13);
+        txt(W - 180, y, num(s.score), 20, COL.accent, 1, 0.5, 0, 13);
         txt(W - 180, y + 19, 'semaforo ' + s.round + '  ·  combo x' + (s.combo || 0), 11, COL.dim, 1, 0.5, 0, 13);
         y += 52;
       }
@@ -2393,9 +2450,10 @@ function drawOverlay(scene, time) {
       }
     } else {
       const pl = P1P();
-      txt(W / 2, 276, money(pl.roundCash), 40, COL.cash, 0.5, 0.5, 0, 13);
-      txt(W / 2, 320, 'mejor combo  x' + pl.bestCombo, 15, COL.paper, 0.5, 0.5, 0, 13);
-      txt(W / 2, 348, 'vidas  ' + S.lives, 15, S.lives > 1 ? COL.paper : COL.danger, 0.5, 0.5, 0, 13);
+      txt(W / 2, 268, '+' + num(pl.roundPts), 40, COL.accent, 0.5, 0.5, 0, 13);
+      txt(W / 2, 302, money(pl.roundCash) + '  ·  mejor combo x' + pl.bestCombo, 14, COL.cash, 0.5, 0.5, 0, 13);
+      txt(W / 2, 328, 'lleva ' + num(pl.pts) + ' puntos', 13, COL.dim, 0.5, 0.5, 0, 13);
+      txt(W / 2, 356, 'vidas  ' + S.lives, 15, S.lives > 1 ? COL.paper : COL.danger, 0.5, 0.5, 0, 13);
     }
     if (S.tallyT > 0.6) txt(W / 2, 386, 'BOTON 1 para seguir', 14, COL.dim, 0.5, 0.5, 0, 13);
     return;
@@ -2447,8 +2505,9 @@ function drawOverlay(scene, time) {
     panel(k, W / 2 - 240, 140, 480, 300);
     txt(W / 2, 186, 'SE ACABO EL REBUSQUE', 28, COL.danger, 0.5, 0.5, 0, 13);
     txt(W / 2, 232, 'aguanto hasta el semaforo ' + S.round, 15, COL.dim, 0.5, 0.5, 0, 13);
-    txt(W / 2, 292, money(P1P().cash), 46, COL.cash, 0.5, 0.5, 0, 13);
-    txt(W / 2, 340, 'mejor combo  x' + P1P().bestCombo + '   ·   ' + P1P().totalPerfect + ' perfectos', 14, COL.paper, 0.5, 0.5, 0, 13);
+    txt(W / 2, 288, num(P1P().pts), 46, COL.accent, 0.5, 0.5, 0, 13);
+    txt(W / 2, 318, 'PUNTOS', 12, COL.dim, 0.5, 0.5, 0, 13);
+    txt(W / 2, 348, money(P1P().cash) + '  ·  x' + P1P().bestCombo + ' combo  ·  ' + P1P().totalPerfect + ' perfectos', 13, COL.paper, 0.5, 0.5, 0, 13);
     if (S.overT > 0.8) txt(W / 2, 402, 'BOTON 1 para continuar', 14, COL.dim, 0.5, 0.5, 0, 13);
     return;
   }
@@ -2474,7 +2533,7 @@ function drawOverlay(scene, time) {
     k.fillRect(0, 0, W, H);
     panel(k, W / 2 - 230, 150, 460, 270);
     txt(W / 2, 196, 'QUEDO EN LA TABLA', 26, COL.accent, 0.5, 0.5, 0, 13);
-    txt(W / 2, 228, money(P1P().cash), 22, COL.cash, 0.5, 0.5, 0, 13);
+    txt(W / 2, 228, num(P1P().pts) + ' PUNTOS', 22, COL.accent, 0.5, 0.5, 0, 13);
     for (let i = 0; i < NAME_LEN; i++) {
       const cx = W / 2 - 70 + i * 70;
       const on = i === S.nameIdx;
