@@ -739,8 +739,14 @@ function stepIdle() {
 }
 
 // --- Rhythm judging -------------------------------------------------------
-const W_PERFECT = 58;    // ms
-const W_GOOD = 132;
+// Ventanas de juicio. Son un porcentaje del beat, no milisegundos fijos: con
+// 132ms fijos y un beat de 230ms la ventana se comia el compas entero y no
+// existia el "muy temprano", asi que machacar el boton era gratis y optimo.
+const W_PERFECT_MAX = 58;   // ms
+const W_GOOD_MAX = 132;
+
+function wPerfect() { return Math.min(W_PERFECT_MAX, S.beatMs * 0.12); }
+function wGood() { return Math.min(W_GOOD_MAX, S.beatMs * 0.26); }
 
 // The floreo: throw the whole cascade high, buy this many beats of free hands,
 // then catch the lot on one beat. Miss that beat and everything hits the road.
@@ -817,7 +823,7 @@ function stepBeat(time, dt) {
   }
 
   let guard = 0;
-  while (time > S.nextBeat + W_GOOD && guard++ < 8) {
+  while (time > S.nextBeat + wGood() && guard++ < 8) {
     for (const p of S.players) {
       const frozen = p.dropT > 0 || p.stunT > 0;
       // Mid-floreo there is nothing in the hands, so there is nothing to miss.
@@ -833,23 +839,32 @@ function stepBeat(time, dt) {
   }
 }
 
+// A grab that catches nothing: too early, on a beat already spent, or with the
+// whole cascade still in the air. Each one shakes the cascade a little more,
+// and a shaken cascade ends up on the asphalt. Mashing has to cost something,
+// otherwise the beat is decoration.
+function fumble(p) {
+  p.show = Math.max(0, p.show - 4);
+  p.wobble = Math.min(1.2, p.wobble + 0.3);
+  SFX.miss();
+  if (p.wobble >= 1) {
+    addFloat(p.px, HAND_Y - 62, 'SE ENREDO', COL.warn);
+    dropBalls(p);
+  }
+}
+
 function tryCatch(p, at) {
   if (p.dropT > 0 || p.stunT > 0) return;
-  if (p.trickEnd >= 0) return;      // still up in the air
-  // Reaching into a car window ties up the hand: the beat is simply gone.
+  // Reaching into a car window ties up the hand: the beat is simply gone, and
+  // the player already paid for it. No extra punishment on top.
   if (p.collectT > 0) return;
-  if (p.beatDone) return;
+  if (p.trickEnd >= 0) { fumble(p); return; }   // still up in the air
+  if (p.beatDone) { fumble(p); return; }        // this beat is already spent
 
   const d = at - S.nextBeat;
-  if (d < -W_GOOD) {
-    // Way too early — a flustered grab. Costs show but does not eat the beat.
-    p.show = Math.max(0, p.show - 4);
-    p.wobble = Math.min(1, p.wobble + 0.2);
-    SFX.miss();
-    return;
-  }
+  if (d < -wGood()) { fumble(p); return; }
   p.beatDone = true;
-  registerJudge(p, Math.abs(d) <= W_PERFECT ? 'PERFECTO' : 'BIEN');
+  registerJudge(p, Math.abs(d) <= wPerfect() ? 'PERFECTO' : 'BIEN');
 }
 
 function tryTrick(p) {
@@ -2078,10 +2093,17 @@ function drawBeatBar(k, time) {
   for (const pl of S.players) {
     if (pl.judgeT > 0 && pl.judge !== 'UY') hitGlow = Math.max(hitGlow, pl.judgeT / 0.7);
   }
+  // The brackets are drawn from the real windows, so when the cascade speeds up
+  // the player can see the target closing instead of guessing.
+  const pxPerMs = span / look;
+  const gw = Math.max(16, wGood() * pxPerMs);
+  const pw = Math.max(9, wPerfect() * pxPerMs);
+  k.fillStyle(COL.paper, 0.09);
+  k.fillRoundedRect(cx - gw, BEAT_Y - 20, gw * 2, 40, 7);
   k.fillStyle(COL.accent, 0.18 + hitGlow * 0.5);
-  k.fillRoundedRect(cx - 20, BEAT_Y - 20, 40, 40, 7);
+  k.fillRoundedRect(cx - pw, BEAT_Y - 20, pw * 2, 40, 7);
   k.lineStyle(3, COL.accent, 0.9);
-  k.strokeRoundedRect(cx - 20, BEAT_Y - 20, 40, 40, 7);
+  k.strokeRoundedRect(cx - pw, BEAT_Y - 20, pw * 2, 40, 7);
 
   if (!liveRound()) return;
 
@@ -2308,6 +2330,7 @@ function drawOverlay(scene, time) {
     txt(W / 2, 76, 'COMO SE JUEGA', 30, COL.accent, 0.5, 0.5, 0, 13);
     const lines = [
       ['BOTON 1', 'Atajar. Presione justo cuando la bola llega a la marca.'],
+      ['', 'Machacar el boton no sirve: manotazo al aire enreda la cascada.'],
       ['JOYSTICK', 'Camine por la avenida entre los carros parados.'],
       ['BOTON 2', 'Cobrar. Solo funciona si el vidrio ya esta abajo.'],
       ['BOTON 3', 'Floreo: las tira alto y le quedan 3 tiempos con las manos'],
@@ -2321,11 +2344,11 @@ function drawOverlay(scene, time) {
       ['DOS', 'START2 arranca el reto: tres semaforos, la misma via, y'],
       ['', 'el que cobre primero se lleva la moneda.'],
     ];
-    let y = 118;
+    let y = 114;
     for (const [a, b] of lines) {
       if (a) txt(92, y, a, 14, COL.accent, 0, 0.5, 0, 13);
       if (b) txt(218, y, b, 13, COL.paper, 0, 0.5, 0, 13);
-      y += 30;
+      y += 29;
     }
     txt(W / 2, H - 46, 'BOTON 1 para volver', 14, COL.dim, 0.5, 0.5, 0, 13);
     return;
