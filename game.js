@@ -487,11 +487,12 @@ function pressedCtl(p, presses, side) {
 
 // --- Game state -----------------------------------------------------------
 const S = {
-  mode: 'boot',          // boot|menu|howto|scores|play|pause|tally|shop|over|name|result
+  mode: 'boot',          // boot|menu|howto|scores|play|pause|tally|shop|over|name|result|tutdone
   scores: [],
   scoresLoaded: false,
   vs: false,             // two-player versus
   demo: false,           // the menu runs a real round with an AI juggler
+  tut: false,            // practice light: nothing kills you, nothing counts
   idleT: 0,              // seconds since the cabinet last saw a button
 
   round: 1,
@@ -529,6 +530,8 @@ const S = {
   menuLock: 0,           // brief deaf spell so a stray press cannot restart
   tallyT: 0,
   overT: 0,
+  tutI: 0,               // practice: which lesson
+  tutN: 0,               // practice: reps done inside this lesson
 };
 
 // Versus is short on purpose: three lights, most cash wins, no lives to grind.
@@ -591,6 +594,7 @@ function create() {
 function startDemo() {
   S.vs = false;
   S.demo = true;
+  S.tut = false;
   S.lives = 3;
   S.players = [mkPlayer(0, CTL_SOLO)];
   S.players[0].ai = true;
@@ -616,6 +620,18 @@ function resetRun(vs) {
 
 function startRound(r) {
   const spec = roundSpec(r);
+  // The practice street is the calmest street in the game: three balls, a slow
+  // beat, no motorbikes, no rain, and only cheap cars that open early.
+  if (S.tut) {
+    spec.balls = 3;
+    spec.beatMs = 620;
+    spec.motos = 0;
+    spec.rain = false;
+    spec.event = null;
+    spec.carCount = 5;
+    spec.rich = 0;
+    spec.tipMul = 1;
+  }
   S.round = r;
   S.spec = spec;
   S.event = spec.event;
@@ -700,6 +716,7 @@ function update(time, delta) {
     case 'over': stepOver(this, presses, dt); break;
     case 'name': stepName(this, presses, dt); break;
     case 'result': stepResult(this, presses, dt); break;
+    case 'tutdone': stepTutDone(this, presses, dt); break;
   }
 
   updateParticles(dt);
@@ -713,7 +730,7 @@ function anyHeld() {
 
 // Nobody walks up to a cabinet frozen on someone else's game-over screen.
 // Every screen but the menu finds its own way back to attract mode.
-const IDLE_LIMIT = { play: 75, pause: 45, howto: 45, scores: 35, tally: 45, shop: 60, over: 30, name: 60, result: 40 };
+const IDLE_LIMIT = { play: 75, pause: 45, howto: 45, scores: 35, tally: 45, shop: 60, over: 30, name: 60, result: 40, tutdone: 40 };
 
 function stepIdle() {
   if (S.mode === 'menu') return;
@@ -766,6 +783,7 @@ function registerJudge(p, kind) {
     p.combo++;
     p.missStreak = 0;
     if (kind === 'PERFECTO') { p.totalPerfect++; SFX.perfect(); } else SFX.good();
+    tutHit(hot ? 'trick' : 'catch');
     if (hot) {
       const bonus = Math.round(1100 * S.spec.tipMul * (1 + p.combo * 0.02));
       p.cash += bonus;
@@ -877,6 +895,7 @@ function tryCollect(p) {
   burst(car.x, CAR_BASE - car.type.h - 10, COL.cash, 10);
   if (amount >= 4000) { SFX.bigcoin(); S.flash = 0.5; S.flashCol = 0x7de07d; }
   else SFX.coin(p.combo);
+  tutHit('cash');
 }
 
 // --- Round flow -----------------------------------------------------------
@@ -898,7 +917,9 @@ function stepPlay(scene, presses, dt, time) {
   if (S.eventT > 0) S.eventT = Math.max(0, S.eventT - dt);
 
   // Light cycle. Red is always RED_MS — the street escalates, never the clock.
-  S.lightT -= dt * 1000;
+  // In practice the red is frozen until the last lesson, so a first-timer can
+  // take as long as they need on the beat.
+  if (!S.tut || S.tutI >= TUT.length - 1) S.lightT -= dt * 1000;
   if (S.lightT <= 0) {
     if (S.light === 'red') {
       S.light = 'yellow';
@@ -956,6 +977,8 @@ function stepPlayer(p, presses, dt, time) {
     if (Math.floor(prev / 3.14) !== Math.floor(p.walkT / 3.14)) SFX.step();
   }
 
+  if (S.tut && Math.abs(p.px - WW / 2) > 150) tutHit('walk');
+
   // Show decays: standing still is not a show.
   if (!frozen && S.light !== 'green') {
     p.show = Math.max(0, p.show - dt * 1.7);
@@ -991,7 +1014,7 @@ function stepCars(dt) {
     }
     // The versus street is short, so a spent car pulls off and another takes
     // the spot. Otherwise the avenue would run dry halfway through the red.
-    if (S.vs && S.light === 'red' && c.reT > 0) {
+    if ((S.vs || S.tut) && S.light === 'red' && c.reT > 0) {
       c.reT -= dt;
       if (c.reT <= 0) restockCar(c);
     }
@@ -1050,7 +1073,7 @@ function resolveGreen(scene) {
       p.cash -= lost;
       addFloat(p.px, HAND_Y - 60, 'iLO COGIO!  -' + money(lost), COL.danger);
     } else {
-      S.lives--;
+      if (!S.tut) S.lives--;
       addFloat(p.px, HAND_Y - 60, 'iTE COGIO EL VERDE!', COL.danger);
     }
     burst(p.px, HAND_Y, COL.danger, 22);
@@ -1069,6 +1092,11 @@ function finishRound() {
   // Attract mode never ends; it just rolls into the next light.
   if (S.demo) {
     startRound(S.round >= 5 ? 1 : S.round + 1);
+    return;
+  }
+  if (S.tut) {
+    S.mode = 'tutdone';
+    S.overT = 0;
     return;
   }
   if (S.vs) {
@@ -1178,9 +1206,57 @@ function updateParticles(dt) {
 }
 
 // --- Menu -----------------------------------------------------------------
-const MENU_ITEMS = ['UN JUGADOR', 'DOS JUGADORES', 'COMO SE JUEGA', 'LOS MAS BERRACOS'];
+const MENU_ITEMS = ['UN JUGADOR', 'DOS JUGADORES', 'LA PRACTICA', 'COMO SE JUEGA', 'LOS MAS BERRACOS'];
+
+// --- Practice -------------------------------------------------------------
+// One lesson at a time, in the order the real game demands them, and the red
+// light does not even start counting until the last one. Nothing here is
+// scored: the point is to feel the beat, the collect and the floreo once.
+const TUT = [
+  { g: 'catch', n: 6, t: 'ATAJE EN EL RITMO',
+    d: 'BOTON 1 cuando la bola baja a la marca del piso.' },
+  { g: 'walk', n: 1, t: 'CAMINE LA AVENIDA',
+    d: 'JOYSTICK. Mientras mas show, mas vidrios se bajan.' },
+  { g: 'cash', n: 3, t: 'COBRE EN LOS VIDRIOS ABIERTOS',
+    d: 'BOTON 2 al lado del carro. Cobrar le come el tiempo: si se cierran, ataje para subir el show.' },
+  { g: 'trick', n: 1, t: 'FLOREE',
+    d: 'BOTON 3 las tira alto: 3 tiempos con las manos libres. Ataje al caer.' },
+  { g: '', n: 1, t: 'SALGASE A LA ESQUINA',
+    d: 'Ahora si arranco el semaforo. Al cambiar toca estar en el anden.' },
+];
+
+function beginTut() {
+  S.tut = true;
+  resetRun(false);
+  S.tutI = 0;
+  S.tutN = 0;
+  S.mode = 'play';
+  S.nextBeat = 0;
+  S.idleT = 0;
+  SFX.start();
+}
+
+// Called from the same places the real mechanics live, so a lesson can only be
+// cleared by actually doing the thing.
+function tutHit(kind) {
+  if (!S.tut) return;
+  const st = TUT[S.tutI];
+  if (!st || st.g !== kind) return;
+  if (++S.tutN < st.n) return;
+  S.tutI++;
+  S.tutN = 0;
+  SFX.select();
+  S.flash = 0.35;
+  S.flashCol = COL.accent;
+  // The last lesson is the light itself: give it a short red and let it run.
+  if (S.tutI >= TUT.length - 1) {
+    S.lightT = 10000;
+    addFloat(midX(), HAND_Y - 78, 'iAHI VIENE EL VERDE!', COL.warn);
+  }
+}
 
 function beginRun(vs) {
+  S.tut = false;
   resetRun(vs);
   S.mode = 'play';
   S.nextBeat = 0;
@@ -1208,7 +1284,8 @@ function stepMenu(scene, presses, dt, time) {
     SFX.select();
     if (S.menuIdx === 0) beginRun(false);
     else if (S.menuIdx === 1) beginRun(true);
-    else if (S.menuIdx === 2) S.mode = 'howto';
+    else if (S.menuIdx === 2) beginTut();
+    else if (S.menuIdx === 3) S.mode = 'howto';
     else {
       S.mode = 'scores';
       loadScores().then((l) => { S.scores = l; });
@@ -1266,6 +1343,16 @@ function stepTally(scene, presses, dt) {
   }
 }
 
+// The practice has no score and no table: it hands the player straight to a
+// real run, which is the only thing it was ever selling.
+function stepTutDone(scene, presses, dt) {
+  S.overT += dt;
+  S.cascadeT += dt * 1.6;
+  if (S.overT < 0.7) return;
+  if (pressedOnce(presses, 'START1', 'START2')) { SFX.select(); startDemo(); return; }
+  if (pressedOnce(presses, 'P1_1', 'P1_2', 'P2_1', 'P2_2')) { SFX.select(); beginRun(false); }
+}
+
 // --- Versus result --------------------------------------------------------
 function stepResult(scene, presses, dt) {
   S.overT += dt;
@@ -1279,8 +1366,11 @@ function stepResult(scene, presses, dt) {
 // score. Reinvest or keep it — that is the actual rebusque.
 function upgradeCost(kind) {
   const owned = P1P().upg[kind];
-  const base = kind === 'shoes' ? 9000 : kind === 'guante' ? 14000 : 11000;
-  return Math.round(base * Math.pow(1.85, owned));
+  // Cheap to start, brutal to max out. The old curve was the other way round:
+  // nobody could afford a first upgrade out of light one, and by light five the
+  // whole tree was pocket change.
+  const base = kind === 'shoes' ? 4500 : kind === 'guante' ? 6500 : 5500;
+  return Math.round(base * Math.pow(2.6, owned));
 }
 
 const UPGRADES = {
@@ -1909,8 +1999,25 @@ function drawTrafficLight(k, time) {
   // The countdown lives inside the lit lamp: the light IS the clock.
   const secs = Math.max(0, Math.ceil(S.lightT / 1000));
   const lit = lamps.find((l) => l.on);
-  if (lit && liveRound()) {
+  if (lit && liveRound() && !(S.tut && S.tutI < TUT.length - 1)) {
     txt(bx + 32, lit.y, String(secs), secs < 10 ? 26 : 20, 0x141020, 0.5, 0.5, 0, 13);
+  }
+}
+
+// The lesson card. It stays up until the player has done the thing, and gets
+// out of the way the moment the light stops being red.
+function drawTutBanner(k, time) {
+  const st = TUT[S.tutI];
+  const p = S.players[0];
+  if (!st || S.light !== 'red' || p.dropT > 0 || p.stunT > 0) return;
+  panel(k, 178, 106, 444, 94, 0.88);
+  txt(400, 128, st.t, 18, COL.accent, 0.5, 0.5, 0, 13);
+  wrapText(400, 152, st.d, 12, COL.paper, 412);
+  if (st.n > 1) {
+    for (let i = 0; i < st.n; i++) {
+      k.fillStyle(i < S.tutN ? COL.cash : 0x3a3446, 1);
+      k.fillCircle(400 - (st.n - 1) * 8 + i * 16, 186, 4);
+    }
   }
 }
 
@@ -2020,7 +2127,7 @@ function drawHud(scene, time) {
   const k = g.hud;
   k.clear();
 
-  const showHud = S.mode === 'play' || S.mode === 'pause' || S.mode === 'tally' || S.mode === 'result';
+  const showHud = S.mode === 'play' || S.mode === 'pause' || S.mode === 'tally' || S.mode === 'result' || S.mode === 'tutdone';
 
   if (showHud) {
     if (S.vs) {
@@ -2042,10 +2149,10 @@ function drawHud(scene, time) {
       k.fillStyle(0x0a0910, 0.72);
       k.fillRoundedRect(14, 12, 260, 60, 10);
       txt(24, 26, money(p.cash), 26, COL.cash, 0, 0.5, 0, 13);
-      txt(24, 54, 'SEMAFORO ' + S.round, 13, COL.dim, 0, 0.5, 0, 13);
+      txt(24, 54, S.tut ? 'PRACTICANDO' : 'SEMAFORO ' + S.round, 13, COL.dim, 0, 0.5, 0, 13);
 
-      // Lives, drawn as spare hats.
-      for (let i = 0; i < 3; i++) {
+      // Lives, drawn as spare hats. Practice has none to lose.
+      for (let i = 0; !S.tut && i < 3; i++) {
         const on = i < S.lives;
         k.fillStyle(on ? COL.shirt : 0x3a3446, 1);
         k.fillRoundedRect(196 + i * 26, 46, 20, 5, 2);
@@ -2074,6 +2181,8 @@ function drawHud(scene, time) {
       if (!S.vs && p.dropT > 0) txt(W / 2, 176, 'RECOGIENDO...', 22, COL.danger, 0.5, 0.5, 0, 13);
       if (!S.vs && p.stunT > 0 && S.light !== 'green') txt(W / 2, 176, 'iLEVANTATE!', 22, COL.danger, 0.5, 0.5, 0, 13);
     }
+
+    if (S.tut && S.mode === 'play') drawTutBanner(k, time);
 
     // The event announces itself at the top of the light and then gets out.
     if (S.eventT > 0 && S.event) {
@@ -2135,10 +2244,10 @@ function drawOverlay(scene, time) {
     drawTitle(k, time);
     txt(W - 18, 26, 'DEMO', 13, COL.dim, 1, 0.5, 0, 13);
 
-    panel(k, W / 2 - 236, 388, 472, 184);
+    panel(k, W / 2 - 236, 374, 472, 198);
     for (let i = 0; i < MENU_ITEMS.length; i++) {
       const on = i === S.menuIdx;
-      const y = 416 + i * 33;
+      const y = 400 + i * 31;
       if (on) {
         k.fillStyle(COL.accent, 0.16);
         k.fillRoundedRect(W / 2 - 216, y - 14, 432, 28, 6);
@@ -2208,6 +2317,7 @@ function drawOverlay(scene, time) {
       ['', 'Aprenda a cobrar en el contratiempo, o floree para alcanzar.'],
       ['LA PACIENCIA', 'El vidrio abierto se vuelve a subir si usted se demora.'],
       ['EL VERDE', 'Al cambiar el semaforo tiene que estar en una esquina.'],
+      ['LA PRACTICA', 'En el menu: las mecanicas una por una, sin verde y sin vidas.'],
       ['DOS', 'START2 arranca el reto: tres semaforos, la misma via, y'],
       ['', 'el que cobre primero se lleva la moneda.'],
     ];
@@ -2317,6 +2427,22 @@ function drawOverlay(scene, time) {
     txt(W / 2, 292, money(P1P().cash), 46, COL.cash, 0.5, 0.5, 0, 13);
     txt(W / 2, 340, 'mejor combo  x' + P1P().bestCombo + '   ·   ' + P1P().totalPerfect + ' perfectos', 14, COL.paper, 0.5, 0.5, 0, 13);
     if (S.overT > 0.8) txt(W / 2, 402, 'BOTON 1 para continuar', 14, COL.dim, 0.5, 0.5, 0, 13);
+    return;
+  }
+
+  if (S.mode === 'tutdone') {
+    k.fillStyle(0x08070f, 0.86);
+    k.fillRect(0, 0, W, H);
+    panel(k, W / 2 - 250, 150, 500, 288);
+    txt(W / 2, 196, 'ESO ES EL REBUSQUE', 28, COL.accent, 0.5, 0.5, 0, 13);
+    txt(W / 2, 246, 'ritmo para atajar, contratiempo para cobrar,', 14, COL.paper, 0.5, 0.5, 0, 13);
+    txt(W / 2, 268, 'floreo para alcanzar, y la esquina antes del verde', 14, COL.paper, 0.5, 0.5, 0, 13);
+    txt(W / 2, 318, 'en la practica hizo ' + money(P1P().cash), 18, COL.cash, 0.5, 0.5, 0, 13);
+    txt(W / 2, 342, 'aqui la plata no cuenta. alla si.', 12, COL.dim, 0.5, 0.5, 0, 13);
+    if (S.overT > 0.7) {
+      txt(W / 2, 388, 'BOTON 1 para jugar de verdad', 15, COL.accent, 0.5, 0.5, 0, 13);
+      txt(W / 2, 412, 'START para volver al menu', 12, COL.dim, 0.5, 0.5, 0, 13);
+    }
     return;
   }
 
